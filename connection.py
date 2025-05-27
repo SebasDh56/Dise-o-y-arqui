@@ -2,16 +2,20 @@ import pika
 import json
 
 class Connection:
-    def __init__(self, host='localhost'):
+    def __init__(self, host='localhost', virtual_host='/'):
         self.host = host
+        self.virtual_host = virtual_host
         self.connection = None
         self.channel = None
 
     def connect(self):
         try:
-            self.connection = pika.BlockingConnection(pika.ConnectionParameters(self.host))
+            credentials = pika.PlainCredentials('guest', 'guest')
+            self.connection = pika.BlockingConnection(
+                pika.ConnectionParameters(self.host, virtual_host=self.virtual_host, credentials=credentials)
+            )
             self.channel = self.connection.channel()
-            print(f"Conexión exitosa a {self.host}")
+            print(f"Conexión exitosa a {self.host} en virtual host {self.virtual_host}")
         except Exception as e:
             print(f"Error al conectar: {e}")
             raise

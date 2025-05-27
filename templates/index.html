@@ -1,83 +1,230 @@
-<script type="text/javascript">
-        var gk_isXlsx = false;
-        var gk_xlsxFileLookup = {};
-        var gk_fileData = {};
-        function filledCell(cell) {
-          return cell !== '' && cell != null;
-        }
-        function loadFileData(filename) {
-        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
-            try {
-                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
-                var firstSheetName = workbook.SheetNames[0];
-                var worksheet = workbook.Sheets[firstSheetName];
-
-                // Convert sheet to JSON to filter blank rows
-                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
-                // Filter out blank rows (rows where all cells are empty, null, or undefined)
-                var filteredData = jsonData.filter(row => row.some(filledCell));
-
-                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
-                var headerRowIndex = filteredData.findIndex((row, index) =>
-                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
-                );
-                // Fallback
-                if (headerRowIndex === -1 || headerRowIndex > 25) {
-                  headerRowIndex = 0;
-                }
-
-                // Convert filtered JSON back to CSV
-                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
-                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
-                return csv;
-            } catch (e) {
-                console.error(e);
-                return "";
-            }
-        }
-        return gk_fileData[filename] || "";
-        }
-        </script><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Gestor de Colas - Tienda en Línea</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestión de Pedidos - Restaurante</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        h1 { text-align: center; }
-        .section { margin: 20px 0; }
-        .messages { border: 1px solid #ccc; padding: 10px; min-height: 200px; }
+        .stock-low { color: #ef4444; font-weight: bold; }
+        .stock-good { color: #22c55e; font-weight: bold; }
+        .progress-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #f3f4f6; border-top: 2px solid #3b82f6; border-radius: 50%; animation: spin 1s linear infinite; margin-left: 5px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .notification { position: fixed; top: 20px; right: 20px; background: #10b981; color: white; padding: 10px 20px; border-radius: 5px; display: none; }
     </style>
 </head>
-<body>
-    <h1>Gestor de Colas - Tienda en Línea</h1>
-    
-    <div class="section">
-        <h2>Notificaciones</h2>
-        <div id="notifications" class="messages"></div>
-    </div>
-    
-    <div class="section">
-        <h2>Logística</h2>
-        <div id="logistics" class="messages"></div>
+<body class="bg-gradient-to-r from-blue-100 to-purple-100 min-h-screen">
+    <div class="container mx-auto p-6">
+        <h1 class="text-4xl font-extrabold text-center mb-8 text-blue-800">🍕 Gestión de Pedidos - Restaurante</h1>
+
+        <!-- Notificación -->
+        <div id="notification" class="notification"></div>
+
+        <!-- Inventario -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+            <h2 class="text-2xl font-semibold mb-4 text-gray-800">📦 Inventario</h2>
+            <div id="inventory" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {% for dish, stock in ingredients.items() %}
+                    <div class="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <p class="font-medium text-gray-700">{{ dish }}: <span id="stock_{{ dish }}" class="{% if stock < 5 %}stock-low{% else %}stock-good{% endif %}">{{ stock }}</span></p>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Formulario de Pedido -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+            <h2 class="text-2xl font-semibold mb-4 text-gray-800">🍽️ Nuevo Pedido</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label for="order_id" class="block text-sm font-medium text-gray-700">ID del Pedido</label>
+                    <input type="text" id="order_id" class="mt-1 block w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500" value="PED{{ orders_history|length + 1 }}">
+                </div>
+                <div>
+                    <label for="dish" class="block text-sm font-medium text-gray-700">Plato</label>
+                    <select id="dish" class="mt-1 block w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500">
+                        {% for dish in ingredients.keys() %}
+                            <option value="{{ dish }}">{{ dish }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label for="quantity" class="block text-sm font-medium text-gray-700">Cantidad</label>
+                    <input type="number" id="quantity" class="mt-1 block w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500" value="1" min="1">
+                </div>
+                <div>
+                    <label for="customer" class="block text-sm font-medium text-gray-700">Cliente</label>
+                    <input type="text" id="customer" class="mt-1 block w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500" value="Cliente {{ orders_history|length + 1 }}">
+                </div>
+            </div>
+            <button onclick="createOrder()" class="mt-4 bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 transition">Enviar Pedido</button>
+            <p id="order_status" class="mt-2 text-sm text-gray-600"></p>
+        </div>
+
+        <!-- Historial de Pedidos -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-2xl font-semibold text-gray-800">📜 Historial de Pedidos</h2>
+                <button onclick="clearHistory()" class="bg-red-500 text-white px-4 py-2 rounded-md hover:bg-red-600 transition">Limpiar Historial</button>
+            </div>
+            <div class="overflow-x-auto">
+                <table id="orders_table" class="w-full">
+                    <thead>
+                        <tr class="bg-gray-100">
+                            <th class="p-3 text-left text-gray-700">ID</th>
+                            <th class="p-3 text-left text-gray-700">Plato</th>
+                            <th class="p-3 text-left text-gray-700">Cantidad</th>
+                            <th class="p-3 text-left text-gray-700">Cliente</th>
+                            <th class="p-3 text-left text-gray-700">Estado</th>
+                            <th class="p-3 text-left text-gray-700">N° Orden</th>
+                            <th class="p-3 text-left text-gray-700">Fecha</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for order in orders_history %}
+                            <tr class="border-b">
+                                <td class="p-3">{{ order.order_id }}</td>
+                                <td class="p-3">{{ order.dish }}</td>
+                                <td class="p-3">{{ order.quantity }}</td>
+                                <td class="p-3">{{ order.customer }}</td>
+                                <td class="p-3 flex items-center" id="status_{{ order.order_id }}">{{ order.status }}{% if order.status == "En preparación" %}<span class="progress-spinner"></span>{% endif %}</td>
+                                <td class="p-3">{{ order.order_number }}</td>
+                                <td class="p-3">{{ order.timestamp }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Mensajes de Seguimiento -->
+        <div class="bg-white p-6 rounded-xl shadow-lg">
+            <h2 class="text-2xl font-semibold mb-4 text-gray-800">📢 Estado de los Pedidos</h2>
+            <div id="tracking_messages" class="max-h-60 overflow-y-auto">
+                {% for msg in tracking_messages %}
+                    <div class="p-3 bg-blue-50 rounded-md mb-2 text-blue-800">{{ msg | tojson }}</div>
+                {% endfor %}
+            </div>
+        </div>
     </div>
 
     <script>
-        function updateMessages(endpoint, elementId) {
-            fetch(endpoint)
-                .then(response => response.json())
-                .then(data => {
-                    const element = document.getElementById(elementId);
-                    data.forEach(msg => {
-                        element.innerHTML += `<p>${JSON.stringify(msg)}</p>`;
-                    });
-                });
+        const socket = io();
+
+        socket.on('connect', () => console.log('Conectado al servidor WebSocket'));
+
+        socket.on('order_created', (data) => {
+            showNotification(data.message, 'success');
+            document.getElementById('order_status').innerText = data.message;
+            document.getElementById('order_status').classList.remove('text-red-600');
+            document.getElementById('order_status').classList.add('text-green-600');
+        });
+
+        socket.on('order_error', (data) => {
+            showNotification(data.message, 'error');
+            document.getElementById('order_status').innerText = data.message;
+            document.getElementById('order_status').classList.remove('text-green-600');
+            document.getElementById('order_status').classList.add('text-red-600');
+        });
+
+        socket.on('update_inventory', (data) => {
+            Object.keys(data).forEach(dish => {
+                const stockElement = document.getElementById(`stock_${dish}`);
+                stockElement.innerText = data[dish];
+                stockElement.classList.remove('stock-low', 'stock-good');
+                stockElement.classList.add(data[dish] < 5 ? 'stock-low' : 'stock-good');
+            });
+        });
+
+        socket.on('update_tracking', (message) => {
+            const element = document.getElementById('tracking_messages');
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'p-3 bg-blue-50 rounded-md mb-2 text-blue-800';
+            msgDiv.innerText = JSON.stringify(message);
+            element.appendChild(msgDiv);
+            element.scrollTop = element.scrollHeight;
+
+            if (message.message) {
+                showNotification(message.message, 'info');
+            } else {
+                showNotification(`Pedido ${message.order_id} ahora está ${message.status}`, message.status === 'Listo' ? 'success' : 'info');
+            }
+        });
+
+        socket.on('update_orders', (orders) => {
+            const tbody = document.getElementById('orders_table').getElementsByTagName('tbody')[0];
+            tbody.innerHTML = '';
+            orders.forEach(order => {
+                const row = tbody.insertRow();
+                row.className = 'border-b';
+                row.insertCell().innerText = order.order_id;
+                row.insertCell().innerText = order.dish;
+                row.insertCell().innerText = order.quantity;
+                row.insertCell().innerText = order.customer;
+                const statusCell = row.insertCell();
+                statusCell.className = 'p-3 flex items-center';
+                statusCell.id = `status_${order.order_id}`;
+                statusCell.innerHTML = `${order.status}${order.status === 'En preparación' ? '<span class="progress-spinner"></span>' : ''}`;
+                row.insertCell().innerText = order.order_number || '';
+                row.insertCell().innerText = order.timestamp;
+            });
+        });
+
+        function createOrder() {
+            const order_id = document.getElementById('order_id').value;
+            const dish = document.getElementById('dish').value;
+            const quantity = document.getElementById('quantity').value;
+            const customer = document.getElementById('customer').value;
+
+            if (!order_id || !dish || quantity <= 0 || !customer) {
+                showNotification('Completa todos los campos correctamente.', 'error');
+                document.getElementById('order_status').innerText = "Completa todos los campos correctamente.";
+                document.getElementById('order_status').classList.add('text-red-600');
+                return;
+            }
+
+            fetch('/create_order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    'order_id': order_id,
+                    'dish': dish,
+                    'quantity': quantity,
+                    'customer': customer
+                })
+            }).then(response => {
+                if (response.ok) {
+                    document.getElementById('order_id').value = `PED${parseInt(order_id.replace('PED', '')) + 1}`;
+                    document.getElementById('customer').value = `Cliente ${parseInt(customer.replace('Cliente ', '')) + 1}`;
+                    document.getElementById('quantity').value = 1;
+                } else {
+                    showNotification('Error al enviar el pedido.', 'error');
+                }
+            }).catch(error => {
+                showNotification('Error en la solicitud: ' + error, 'error');
+            });
         }
 
-        setInterval(() => {
-            updateMessages('/notifications', 'notifications');
-            updateMessages('/logistics', 'logistics');
-        }, 2000);
+        function clearHistory() {
+            fetch('/clear_history', {
+                method: 'POST'
+            }).then(response => {
+                if (response.ok) {
+                    showNotification('Historial limpiado.', 'success');
+                }
+            });
+        }
+
+        function showNotification(message, type) {
+            const notification = document.getElementById('notification');
+            notification.innerText = message;
+            notification.style.display = 'block';
+            notification.style.background = type === 'success' ? '#10b981' : type === 'error' ? '#ef4444' : '#3b82f6';
+            setTimeout(() => {
+                notification.style.display = 'none';
+            }, 3000);
+        }
     </script>
 </body>
 </html>
